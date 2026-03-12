@@ -14,6 +14,37 @@
 
 ---
 
+## Table of Contents
+
+1. [The Problem](#the-problem)
+2. [What It Does](#what-it-does)
+3. [Demo](#demo)
+4. [Key Features](#key-features)
+5. [Built On](#built-on)
+6. [Quickstart](#quickstart)
+7. [Architecture](#architecture)
+8. [Step-by-Step Testing Guide](#step-by-step-testing-guide)
+   - [Step 1 — Set Up Your Environment](#step-1--set-up-your-environment)
+   - [Step 2 — Start the Backend](#step-2--start-the-backend)
+   - [Step 3 — Generate a Synthetic Golden Dataset](#step-3--generate-a-synthetic-golden-dataset)
+   - [Step 4 — Evaluate a Single RAG Response](#step-4--evaluate-a-single-rag-response)
+   - [Step 5 — Evaluate a Batch](#step-5--evaluate-a-batch)
+   - [Step 6 — Compare Two Evaluations](#step-6--compare-two-evaluations)
+   - [Step 7 — Run the Automated Test Suite](#step-7--run-the-automated-test-suite)
+9. [Understanding Verdicts](#understanding-verdicts)
+10. [RAGAS Metrics Explained](#ragas-metrics-explained)
+11. [Interpreting Recommendations](#interpreting-recommendations)
+12. [How LLM-as-Judge Works](#how-llm-as-judge-works)
+13. [Integration: Evaluating multi-llm-rag-agent-chat](#integration-evaluating-multi-llm-rag-agent-chat)
+14. [Key Design Decisions](#key-design-decisions)
+15. [Extending the System](#extending-the-system)
+16. [API Reference](#api-reference)
+17. [Key Files](#key-files)
+18. [Configuration](#configuration)
+19. [Contributing](#contributing)
+
+---
+
 ## The Problem
 
 Most RAG systems ship broken.
@@ -555,6 +586,279 @@ RAG Auditor uses Claude (`claude-opus-4.6`) for three purposes:
 
 ---
 
+## Integration: Evaluating multi-llm-rag-agent-chat
+
+[multi-llm-rag-agent-chat](https://github.com/amitgambhir/multi-llm-rag-agent-chat) is a production RAG chatbot with dual-LLM routing (GPT-4o / Gemini Flash), ChromaDB vector storage, HuggingFace embeddings (`all-MiniLM-L6-v2`), and an RLHF feedback loop. RAG Auditor is the ideal complement — it gives you objective metric scores for every dimension of that pipeline.
+
+```
+multi-llm-rag-agent-chat          RAG Auditor
+─────────────────────────         ─────────────────────────────────
+Upload documents          ──►     Generate golden dataset from same docs
+Ask question              ──►     Capture question + answer + contexts
+ChromaDB retrieval (top 6)──►     Evaluate context_precision / context_recall
+GPT-4o or Gemini answer   ──►     Evaluate faithfulness / answer_relevancy
+RLHF re-ranking active    ──►     Re-run batch eval, compare delta scores
+```
+
+### Step 1 — Generate a Golden Dataset from Your Documents
+
+Use the same documents you uploaded to the chatbot to generate ground-truth Q&A pairs:
+
+```bash
+curl -X POST http://localhost:8000/generate-dataset \
+  -H "Content-Type: application/json" \
+  -d '{
+    "documents": [
+      "paste the text content of one of your uploaded PDFs or web pages here",
+      "paste a second document here"
+    ],
+    "num_questions": 20
+  }' \
+  -o golden_dataset.json
+```
+
+These Q&A pairs become your evaluation harness. The `ground_truth` field is what you use to score context recall.
+
+### Step 2 — Capture Live Responses from the Chatbot
+
+For each question in your golden dataset, query the chatbot and capture the full response including the retrieved source chunks. The chatbot's chat endpoint accepts `{ "query": "...", "session_id": "..." }` and returns `answer` + `sources`.
+
+> **Note on content truncation:** The chatbot's `sources[].content` field is currently truncated to 300 characters (`doc.page_content[:300]` in `chat.py`). This is fine for UI display but too short for RAGAS to compute accurate faithfulness and recall scores. See [Changes needed to multi-llm-rag-agent-chat](#changes-needed-to-multi-llm-rag-agent-chat) below for the one-line fix.
+
+```python
+import httpx, json, uuid
+
+golden = json.load(open("golden_dataset.json"))
+samples = []
+session_id = str(uuid.uuid4())
+
+for pair in golden["pairs"]:
+    # Query the chatbot backend — field is "query", not "message"
+    resp = httpx.post(
+        "http://localhost:8001/chat",
+        json={"query": pair["question"], "session_id": session_id},
+        timeout=60,
+    )
+    data = resp.json()
+
+    samples.append({
+        "question": pair["question"],
+        "answer": data["answer"],
+        # sources[].content is truncated to 300 chars by default — apply the
+        # full_content fix (see below) to get meaningful RAGAS scores
+        "contexts": [s["content"] for s in data["sources"]],
+        "ground_truth": pair["ground_truth"],
+        "mode": "full",
+    })
+
+json.dump({"samples": samples}, open("batch_input.json", "w"))
+```
+
+#### Changes needed to multi-llm-rag-agent-chat
+
+Only one change is required in the chatbot to make it fully compatible with RAG Auditor evaluation.
+
+**Problem:** `backend/routers/chat.py` truncates source content to 300 chars:
+```python
+# current — too short for RAGAS
+Source(content=doc.page_content[:300], ...)
+```
+
+**Fix:** Return the full chunk content (or add a `full_content` field alongside the truncated preview):
+```python
+# option A — return full content (evaluation-friendly, slightly larger payload)
+Source(content=doc.page_content, ...)
+
+# option B — keep the 300-char preview for UI, add full content for eval
+Source(
+    content=doc.page_content[:300],   # UI display
+    full_content=doc.page_content,    # evaluation use
+    ...
+)
+```
+
+If you go with option B, update the integration script to use `s["full_content"]` instead of `s["content"]`.
+
+No other changes are required — the chatbot's API shape (`query`, `answer`, `sources`, `chunk_ids`, `llm_used`, `complexity_score`) maps cleanly to RAG Auditor's evaluation input.
+
+### Step 3 — Run Batch Evaluation
+
+```bash
+curl -X POST http://localhost:8000/evaluate/batch \
+  -H "Content-Type: application/json" \
+  -d @batch_input.json \
+  -o batch_results.json
+
+# Quick summary
+cat batch_results.json | jq '.aggregate'
+```
+
+This gives you aggregate scores across your whole document corpus — exactly what you need to decide if the pipeline is production-ready.
+
+### Step 4 — Compare GPT-4o vs Gemini Routing
+
+The chatbot routes queries above complexity threshold 0.4 to GPT-4o and below to Gemini Flash. Use RAG Auditor's compare mode to measure whether the routing decision actually improves quality:
+
+```python
+import httpx, json
+
+question = "What are the key architectural trade-offs in microservices?"  # high complexity
+contexts = ["...retrieved chunks..."]
+ground_truth = "..."
+
+# Force GPT-4o answer (or capture from a high-complexity query)
+gpt4o_eval = httpx.post("http://localhost:8000/evaluate", json={
+    "question": question,
+    "answer": "GPT-4o generated answer here",
+    "contexts": contexts,
+    "ground_truth": ground_truth,
+    "mode": "full"
+}).json()
+
+# Capture Gemini answer (low-complexity routing)
+gemini_eval = httpx.post("http://localhost:8000/evaluate", json={
+    "question": question,
+    "answer": "Gemini Flash generated answer here",
+    "contexts": contexts,
+    "ground_truth": ground_truth,
+    "mode": "full"
+}).json()
+
+# Compare
+compare = httpx.post("http://localhost:8000/evaluate/compare", json={
+    "baseline": gemini_eval,
+    "candidate": gpt4o_eval
+}).json()
+
+print(compare["summary"])
+# e.g. "GPT-4o improved faithfulness by 12.0% and answer_relevancy by 8.0%."
+```
+
+This tells you whether the routing threshold (0.4) is correctly placed — if GPT-4o isn't consistently outscoring Gemini on hard questions, you may need to adjust the threshold.
+
+### Step 5 — Measure RLHF Improvement Over Time
+
+The chatbot's RLHF loop re-ranks ChromaDB results based on user thumbs up/down. To measure whether feedback is actually improving retrieval quality:
+
+```bash
+# Baseline: evaluate before users have given feedback
+curl -X POST http://localhost:8000/evaluate/batch \
+  -H "Content-Type: application/json" \
+  -d @batch_input.json \
+  -o before_rlhf.json
+
+# ... let users interact with the chatbot and submit feedback ...
+
+# Re-run: same questions, same contexts, re-capture from chatbot
+curl -X POST http://localhost:8000/evaluate/batch \
+  -H "Content-Type: application/json" \
+  -d @batch_input_after.json \
+  -o after_rlhf.json
+
+# Compare aggregate context_precision scores
+cat before_rlhf.json | jq '.aggregate.context_precision'
+cat after_rlhf.json  | jq '.aggregate.context_precision'
+```
+
+An increase in `context_precision` after RLHF feedback confirms that re-ranking is surfacing higher-signal chunks. An increase in `context_recall` confirms fewer relevant chunks are being missed.
+
+### What to Watch For
+
+| Metric | What it reveals about the chatbot |
+|---|---|
+| **context_precision** | Whether ChromaDB's cosine similarity retrieval (top 6 → top 3) is pulling in noise |
+| **context_recall** | Whether `all-MiniLM-L6-v2` embeddings capture the semantic meaning of your domain |
+| **faithfulness** | Whether GPT-4o / Gemini is staying grounded or hallucinating beyond retrieved chunks |
+| **answer_relevancy** | Whether the complexity router is selecting the right LLM for each query type |
+| **hallucination_risk** | Claude's independent assessment — useful as a cross-check on the routing decision |
+
+> **Expected baseline:** `all-MiniLM-L6-v2` is a lightweight embedding model optimized for speed, not domain accuracy. If `context_recall` scores below 0.70 consistently, consider upgrading to a larger embedding model (e.g. `BAAI/bge-large-en-v1.5`) and re-running the batch eval to measure the improvement.
+
+---
+
+## Key Design Decisions
+
+### 1. RAGAS + Claude in combination, not either/or
+RAGAS provides statistically rigorous, reproducible metrics based on dataset science. Claude provides contextual reasoning that RAGAS cannot — specifically hallucination detection and plain-English explanations. Running both in parallel via `asyncio.gather()` means neither adds latency to the other.
+
+### 2. Weighted overall score, not a simple average
+Faithfulness (35%) is weighted highest because hallucinating content is the most damaging RAG failure mode. Answer relevancy (30%) is second because an off-topic answer is equally useless regardless of how well it's grounded. Context metrics are weighted lower (20%/15%) because they diagnose the retriever, which is fixable without touching the LLM.
+
+### 3. SSE streaming over polling
+The `/evaluate/stream` endpoint emits progress events per metric so the UI can update in real time as each RAGAS metric completes. This avoids a blank "loading" state during what can be a 10–30 second evaluation.
+
+### 4. Three-tier verdict, not a score
+`READY` / `NEEDS_WORK` / `NOT_READY` gives developers and stakeholders a clear go/no-go signal without needing to interpret a float. Hallucination risk overrides the score: even a 0.95 overall score is `NOT_READY` if Claude classifies hallucination as `high`.
+
+### 5. RAGAS → Claude fallback for dataset generation
+The dataset generator first attempts RAGAS `TestsetGenerator` (which produces richer, more diverse question types using multi-hop reasoning). If RAGAS is unavailable or fails, it falls back to a direct Claude prompt that produces the same JSON schema. The caller never needs to know which path ran.
+
+### 6. Recommendations sorted by severity, not metric
+Critical issues (`score < 0.50`) surface first regardless of which metric produced them. This matches how a developer would triage — fix the worst thing first, then warnings, then informational.
+
+---
+
+## Extending the System
+
+### Swap the LLM Judge
+
+All Claude calls are isolated in `backend/services/llm_judge.py`. To use a different model, change the `model` parameter:
+
+```python
+# llm_judge.py
+response = await client.messages.create(
+    model="claude-opus-4-6",   # change this
+    ...
+)
+```
+
+To use a different provider entirely, replace the `anthropic.AsyncAnthropic` client with any async client that accepts the same prompt structure.
+
+### Add a New RAGAS Metric
+
+In `backend/services/ragas_evaluator.py`, add your metric to `metrics_config` in `stream_ragas_evaluation()` and to `_run_ragas_sync()`:
+
+```python
+from ragas.metrics import answer_correctness   # example new metric
+
+metrics_config = [
+    ...
+    ("answer_correctness", "Checking answer correctness..."),
+]
+```
+
+Then add it to the `Scores` model in `backend/models/evaluation.py` and the weighting dict in `backend/utils/formatters.py`.
+
+### Change the Verdict Thresholds
+
+Edit `score_to_verdict()` in `backend/utils/formatters.py`:
+
+```python
+def score_to_verdict(overall_score: float, hallucination_risk) -> str:
+    if hallucination_risk == "high":
+        return "NOT_READY"
+    if overall_score >= 0.85:   # raise the bar
+        return "READY"
+    if overall_score >= 0.65:
+        return "NEEDS_WORK"
+    return "NOT_READY"
+```
+
+### Change the Score Weights
+
+Edit the `weights` dict in `compute_overall_score()` in `backend/utils/formatters.py`. Weights are automatically re-normalized if a metric is absent, so you can adjust without breaking missing-metric cases.
+
+### Add a New Evaluation Endpoint
+
+Add a router file in `backend/routers/` and register it in `backend/main.py`:
+
+```python
+from routers.my_endpoint import router as my_router
+app.include_router(my_router)
+```
+
+---
+
 ## API Reference
 
 Interactive docs available at http://localhost:8000/docs
@@ -570,31 +874,78 @@ Interactive docs available at http://localhost:8000/docs
 
 ---
 
-## Key Files
+## Project Structure
 
-| File | Purpose |
-|---|---|
-| `backend/main.py` | FastAPI app, CORS, router registration |
-| `backend/routers/evaluate.py` | Single, batch, streaming, compare endpoints |
-| `backend/routers/generate_dataset.py` | Dataset generation endpoint |
-| `backend/services/ragas_evaluator.py` | RAGAS metric runner (async + streaming) |
-| `backend/services/llm_judge.py` | Hallucination detection + explanation via Claude |
-| `backend/services/trace_analyzer.py` | Maps scores to retrieval/generation stage traces |
-| `backend/services/dataset_generator.py` | RAGAS TestsetGenerator + Claude fallback |
-| `backend/models/evaluation.py` | Pydantic models for requests and responses |
-| `backend/models/dataset.py` | Pydantic models for dataset generation |
-| `backend/utils/formatters.py` | Score clamping, weighting, verdict logic |
-| `backend/tests/test_evaluate.py` | Unit tests (no API key required) |
+```
+rag-auditor/
+│
+├── .env.example                          # Template — copy to .env and add ANTHROPIC_API_KEY
+├── docker-compose.yml                    # Orchestrates backend + frontend
+│
+├── backend/
+│   ├── Dockerfile
+│   ├── requirements.txt                  # ragas==0.1.21, anthropic, langchain-anthropic, fastapi
+│   ├── main.py                           # FastAPI app, CORS middleware, router registration
+│   │
+│   ├── models/
+│   │   ├── evaluation.py                 # EvaluationRequest/Response, Scores, Trace, Recommendations
+│   │   └── dataset.py                    # GenerateDatasetRequest/Response, QAPair
+│   │
+│   ├── routers/
+│   │   ├── evaluate.py                   # POST /evaluate, /evaluate/stream, /evaluate/batch, /evaluate/compare
+│   │   ├── generate_dataset.py           # POST /generate-dataset
+│   │   └── health.py                     # GET /health
+│   │
+│   ├── services/
+│   │   ├── ragas_evaluator.py            # RAGAS metric runner — sync executor + async SSE streaming
+│   │   ├── llm_judge.py                  # Claude hallucination detector + plain-English explanation
+│   │   ├── trace_analyzer.py             # Maps scores → retrieval/generation stage issues + recommendations
+│   │   └── dataset_generator.py          # RAGAS TestsetGenerator with Claude fallback
+│   │
+│   ├── utils/
+│   │   └── formatters.py                 # clamp_score(), compute_overall_score(), score_to_verdict()
+│   │
+│   └── tests/
+│       └── test_evaluate.py              # Unit tests for formatters, trace, recommendations (no API key)
+│
+└── frontend/
+    ├── Dockerfile
+    ├── vite.config.js                    # Dev proxy → localhost:8000
+    ├── src/
+    │   ├── App.jsx                       # Top-level layout + tab routing
+    │   ├── components/
+    │   │   ├── EvaluatorForm.jsx         # Single-sample input form
+    │   │   ├── ResultsDashboard.jsx      # Score cards, verdict, explanation
+    │   │   ├── TraceVisualizer.jsx       # Retrieval + generation stage breakdown
+    │   │   ├── HallucinationBadge.jsx    # LOW / MEDIUM / HIGH risk badge
+    │   │   ├── RecommendationsPanel.jsx  # Sorted fix recommendations
+    │   │   ├── BatchEvaluator.jsx        # CSV/JSON upload + aggregate results
+    │   │   ├── DatasetGenerator.jsx      # Doc input + dataset download
+    │   │   ├── CompareMode.jsx           # Baseline vs candidate delta view
+    │   │   ├── HistoryPanel.jsx          # Session evaluation history
+    │   │   └── ScoreCard.jsx             # Reusable per-metric score component
+    │   ├── hooks/
+    │   │   ├── useEvaluate.js            # SSE streaming hook for /evaluate/stream
+    │   │   └── useHistory.js             # Session history state
+    │   ├── api/
+    │   │   └── client.js                 # Axios wrappers for all backend endpoints
+    │   └── utils/
+    │       └── scoreHelpers.js           # Color/label helpers for score display
+    └── src/utils/
+        └── scoreHelpers.test.js          # Frontend unit tests
+```
 
 ---
 
-## Environment Variables
+## Configuration
 
-| Variable | Required | Description |
-|---|---|---|
-| `ANTHROPIC_API_KEY` | Yes | Your Anthropic API key |
-| `RAGAS_APP_TOKEN` | No | RAGAS Cloud token for advanced features |
-| `CORS_ORIGINS` | No | Allowed origins (default: `http://localhost:3000`) |
+All settings are loaded from `.env` (copy from `.env.example`):
+
+| Variable | Default | Required | Description |
+|---|---|---|---|
+| `ANTHROPIC_API_KEY` | — | Yes | Anthropic API key — used for RAGAS judge LLM, hallucination detection, and explanations |
+| `RAGAS_APP_TOKEN` | — | No | RAGAS Cloud token for dashboard and experiment tracking |
+| `CORS_ORIGINS` | `http://localhost:3000` | No | Comma-separated list of allowed frontend origins |
 
 ---
 
