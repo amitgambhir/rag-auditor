@@ -2,10 +2,13 @@
 from __future__ import annotations
 import json
 import os
+import time
 import anthropic
 
 import config
+from logger import get_logger
 
+_log = get_logger("rag_auditor.llm_judge")
 _client: anthropic.AsyncAnthropic | None = None
 
 
@@ -61,6 +64,7 @@ Generated Answer: {answer}
 
 Analyze whether this answer hallucinate or introduces unsupported information."""
 
+    t0 = time.perf_counter()
     try:
         response = await client.messages.create(
             model=config.ANTHROPIC_MODEL,
@@ -68,6 +72,7 @@ Analyze whether this answer hallucinate or introduces unsupported information.""
             system=HALLUCINATION_SYSTEM,
             messages=[{"role": "user", "content": user_message}],
         )
+        latency_ms = round((time.perf_counter() - t0) * 1000, 2)
         text = response.content[0].text.strip()
         # Strip markdown code blocks if present
         if text.startswith("```"):
@@ -75,13 +80,33 @@ Analyze whether this answer hallucinate or introduces unsupported information.""
             if text.startswith("json"):
                 text = text[4:]
         result = json.loads(text)
+        risk = result.get("risk_level", "medium")
+        _log.info(
+            "anthropic_call",
+            extra={
+                "op": "detect_hallucination",
+                "model": config.ANTHROPIC_MODEL,
+                "latency_ms": latency_ms,
+                "risk_level": risk,
+            },
+        )
         return {
-            "risk_level": result.get("risk_level", "medium"),
+            "risk_level": risk,
             "confidence": float(result.get("confidence", 0.5)),
             "unsupported_claims": result.get("unsupported_claims", []),
             "rationale": result.get("rationale", ""),
         }
     except Exception as exc:
+        latency_ms = round((time.perf_counter() - t0) * 1000, 2)
+        _log.warning(
+            "anthropic_error",
+            extra={
+                "op": "detect_hallucination",
+                "model": config.ANTHROPIC_MODEL,
+                "error_class": type(exc).__name__,
+                "latency_ms": latency_ms,
+            },
+        )
         return {
             "risk_level": "medium",
             "confidence": 0.0,
@@ -107,6 +132,7 @@ async def generate_explanation(scores: dict, recommendations: list[dict]) -> str
 Top issues: {rec_summary if rec_summary else 'None'}
 Generate a brief plain-English summary."""
 
+    t0 = time.perf_counter()
     try:
         response = await client.messages.create(
             model=config.ANTHROPIC_MODEL,
@@ -114,6 +140,25 @@ Generate a brief plain-English summary."""
             system=EXPLANATION_SYSTEM,
             messages=[{"role": "user", "content": prompt}],
         )
+        latency_ms = round((time.perf_counter() - t0) * 1000, 2)
+        _log.info(
+            "anthropic_call",
+            extra={
+                "op": "generate_explanation",
+                "model": config.ANTHROPIC_MODEL,
+                "latency_ms": latency_ms,
+            },
+        )
         return response.content[0].text.strip()
-    except Exception:
+    except Exception as exc:
+        latency_ms = round((time.perf_counter() - t0) * 1000, 2)
+        _log.warning(
+            "anthropic_error",
+            extra={
+                "op": "generate_explanation",
+                "model": config.ANTHROPIC_MODEL,
+                "error_class": type(exc).__name__,
+                "latency_ms": latency_ms,
+            },
+        )
         return "Evaluation complete. Review the metric scores and recommendations above for details."

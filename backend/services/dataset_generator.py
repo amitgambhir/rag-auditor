@@ -3,11 +3,15 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import time
 from functools import partial
 from typing import Optional
 import anthropic
 
 import config
+from logger import get_logger
+
+_log = get_logger("rag_auditor.dataset_generator")
 
 _client: Optional[anthropic.AsyncAnthropic] = None
 
@@ -107,26 +111,54 @@ Generate exactly {num_questions} diverse Q&A pairs for RAG evaluation.
 Include a mix of simple, reasoning-based, and multi-context questions.
 Return only valid JSON — no explanation."""
 
+    t0 = time.perf_counter()
     response = await client.messages.create(
         model=config.ANTHROPIC_MODEL,
         max_tokens=config.MAX_TOKENS_GENERATION,
         system=GENERATION_SYSTEM,
         messages=[{"role": "user", "content": prompt}],
     )
+    latency_ms = round((time.perf_counter() - t0) * 1000, 2)
     text = response.content[0].text.strip()
     if text.startswith("```"):
         text = text.split("```")[1]
         if text.startswith("json"):
             text = text[4:]
-    pairs = json.loads(text)
-    return pairs[:num_questions]
+    pairs = json.loads(text)[:num_questions]
+    _log.info(
+        "anthropic_call",
+        extra={
+            "op": "generate_dataset",
+            "provider": "claude",
+            "model": config.ANTHROPIC_MODEL,
+            "latency_ms": latency_ms,
+            "num_pairs": len(pairs),
+        },
+    )
+    return pairs
 
 
 async def generate_dataset(documents: list[str], num_questions: int) -> list[dict]:
     """Generate a synthetic golden dataset. Tries RAGAS first, falls back to Claude."""
+    t0 = time.perf_counter()
     try:
         pairs = await _run_in_executor(_generate_with_ragas, documents, num_questions)
+        _log.info(
+            "dataset_generated",
+            extra={
+                "provider": "ragas",
+                "latency_ms": round((time.perf_counter() - t0) * 1000, 2),
+                "num_pairs": len(pairs),
+            },
+        )
         return pairs
-    except Exception:
-        # Fall back to Claude-based generation
+    except Exception as exc:
+        _log.warning(
+            "ragas_fallback",
+            extra={
+                "reason": type(exc).__name__,
+                "fallback": "claude",
+                "latency_ms": round((time.perf_counter() - t0) * 1000, 2),
+            },
+        )
         return await generate_with_claude(documents, num_questions)

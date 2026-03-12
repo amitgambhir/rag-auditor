@@ -2,10 +2,14 @@
 from __future__ import annotations
 import asyncio
 import os
+import time
 from typing import Optional, AsyncGenerator
 from functools import partial
 
 import config
+from logger import get_logger
+
+_log = get_logger("rag_auditor.ragas")
 
 
 async def _run_in_executor(fn, *args):
@@ -120,12 +124,32 @@ async def stream_ragas_evaluation(
 
     for idx, (metric_name, message) in enumerate(metrics_config):
         yield {"type": "progress", "message": message, "step": idx + 1, "total": len(metrics_config) + 1}
+        t0 = time.perf_counter()
         try:
             result = await _run_in_executor(
                 _run_single_metric, metric_name, question, answer, contexts, ground_truth
             )
+            latency_ms = round((time.perf_counter() - t0) * 1000, 2)
             scores[metric_name] = result
-        except Exception:
+            _log.info(
+                "ragas_metric",
+                extra={
+                    "metric": metric_name,
+                    "score": result,
+                    "latency_ms": latency_ms,
+                    "model": config.ANTHROPIC_MODEL,
+                },
+            )
+        except Exception as exc:
+            latency_ms = round((time.perf_counter() - t0) * 1000, 2)
+            _log.warning(
+                "ragas_metric_error",
+                extra={
+                    "metric": metric_name,
+                    "error_class": type(exc).__name__,
+                    "latency_ms": latency_ms,
+                },
+            )
             scores[metric_name] = None
 
     yield {"type": "progress", "message": "Finalizing scores...", "step": len(metrics_config) + 1, "total": len(metrics_config) + 1}
