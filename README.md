@@ -120,6 +120,8 @@ Answer:      "You can get a refund within 30 days, no questions asked."
   that blocker entirely)
 - **Compare mode** — run before/after evals when you change chunking, top-k, or prompts;
   see exact delta per metric
+- **Evaluation history** — save results in the current browser session and restore them
+  into the evaluator to compare runs or keep iterating
 - **RAG trace visualization** — see scores annotated at each stage:
   Query → Retrieval → Prompt Construction → Generation → Answer
 - **LLM-as-judge** — Claude evaluates hallucination risk with reasoning, not just a number
@@ -261,6 +263,9 @@ Before you can evaluate your RAG system, you need Q&A pairs with ground truth. U
 5. Click **Generate**
 6. Download as JSON or CSV
 
+CSV exports store `contexts` as a JSON array string so they round-trip cleanly into the Batch Evaluator.
+The Batch Evaluator also accepts the older pipe-delimited `contexts` format for compatibility.
+
 #### Via curl
 
 ```bash
@@ -330,7 +335,7 @@ Use a Q&A pair from your dataset (or write one manually) and evaluate it.
 
 1. Open http://localhost:3000
 2. Fill in **Question**, **Answer**, **Retrieved Contexts** (one per line), and optionally **Ground Truth**
-3. Choose mode: **Full** (all metrics) or **Quick** (skips context recall, faster)
+3. Choose mode: **Full** (all metrics) or **Quick** (skips context recall even if Ground Truth is provided, faster)
 4. Click **Evaluate**
 5. View per-metric scores, hallucination badge, trace visualization, and recommendations
 
@@ -401,6 +406,8 @@ Events emitted (one per line, `data: {...}`):
 ### Step 5 — Evaluate a Batch
 
 Use this when you have a full dataset and want aggregate statistics.
+
+In the UI, batch upload accepts JSON files directly and CSV files with `contexts` stored either as a JSON array string or as a legacy pipe-delimited field.
 
 ```bash
 curl -X POST http://localhost:8000/evaluate/batch \
@@ -922,11 +929,11 @@ rag-auditor/
     │   │   ├── BatchEvaluator.jsx        # CSV/JSON upload + aggregate results
     │   │   ├── DatasetGenerator.jsx      # Doc input + dataset download
     │   │   ├── CompareMode.jsx           # Baseline vs candidate delta view
-    │   │   ├── HistoryPanel.jsx          # Session evaluation history
+    │   │   ├── HistoryPanel.jsx          # In-memory session history + restore
     │   │   └── ScoreCard.jsx             # Reusable per-metric score component
     │   ├── hooks/
     │   │   ├── useEvaluate.js            # SSE streaming hook for /evaluate/stream
-    │   │   └── useHistory.js             # Session history state
+    │   │   └── useHistory.js             # In-memory session history state
     │   ├── api/
     │   │   └── client.js                 # Axios wrappers for all backend endpoints
     │   └── utils/
