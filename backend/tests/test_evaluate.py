@@ -1,6 +1,4 @@
 """Tests for evaluation endpoints and logic."""
-import pytest
-from unittest.mock import AsyncMock, patch, MagicMock
 import sys
 import os
 

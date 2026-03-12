@@ -4,7 +4,6 @@ import asyncio
 import os
 from typing import Optional, AsyncGenerator
 from functools import partial
-import json
 
 
 async def _run_in_executor(fn, *args):
@@ -105,9 +104,6 @@ async def stream_ragas_evaluation(
     Yield progress SSE events, then yield final scores.
     Runs metrics sequentially to stream individual updates.
     """
-    from datasets import Dataset
-    from ragas import evaluate
-
     metrics_config = [
         ("faithfulness", "Checking answer faithfulness..."),
         ("answer_relevancy", "Measuring answer relevancy..."),
@@ -127,7 +123,7 @@ async def stream_ragas_evaluation(
                 _run_single_metric, metric_name, question, answer, contexts, ground_truth
             )
             scores[metric_name] = result
-        except Exception as exc:
+        except Exception:
             scores[metric_name] = None
 
     yield {"type": "progress", "message": "Finalizing scores...", "step": len(metrics_config) + 1, "total": len(metrics_config) + 1}

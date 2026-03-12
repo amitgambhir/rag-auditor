@@ -1,6 +1,5 @@
 """Analyze RAG pipeline trace — per-stage scoring and issue detection."""
 from __future__ import annotations
-from typing import Optional
 from models.evaluation import Trace, TraceStage
 
 

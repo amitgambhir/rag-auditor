@@ -5,12 +5,12 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
+from fastapi import FastAPI  # noqa: E402
+from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
 
-from routers.health import router as health_router
-from routers.evaluate import router as evaluate_router
-from routers.generate_dataset import router as dataset_router
+from routers.health import router as health_router  # noqa: E402
+from routers.evaluate import router as evaluate_router  # noqa: E402
+from routers.generate_dataset import router as dataset_router  # noqa: E402
 
 app = FastAPI(
     title="RAG Auditor API",

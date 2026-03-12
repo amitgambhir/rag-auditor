@@ -27,7 +27,6 @@ def _generate_with_ragas(documents: list[str], num_questions: int) -> list[dict]
     from ragas.testset.generator import TestsetGenerator
     from ragas.testset.evolutions import simple, reasoning, multi_context
     from langchain_anthropic import ChatAnthropic
-    from langchain_community.document_loaders import TextLoader
     from langchain.schema import Document
 
     from ragas.llms import LangchainLLMWrapper
