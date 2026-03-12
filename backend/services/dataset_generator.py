@@ -7,13 +7,19 @@ from functools import partial
 from typing import Optional
 import anthropic
 
+import config
+
 _client: Optional[anthropic.AsyncAnthropic] = None
 
 
 def _get_client() -> anthropic.AsyncAnthropic:
     global _client
     if _client is None:
-        _client = anthropic.AsyncAnthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
+        _client = anthropic.AsyncAnthropic(
+            api_key=os.environ.get("ANTHROPIC_API_KEY"),
+            max_retries=config.LLM_MAX_RETRIES,
+            timeout=config.LLM_TIMEOUT,
+        )
     return _client
 
 
@@ -35,7 +41,7 @@ def _generate_with_ragas(documents: list[str], num_questions: int) -> list[dict]
 
     judge_llm = LangchainLLMWrapper(
         ChatAnthropic(
-            model="claude-sonnet-4-6",
+            model=config.ANTHROPIC_MODEL,
             anthropic_api_key=os.environ.get("ANTHROPIC_API_KEY", ""),
         )
     )
@@ -102,8 +108,8 @@ Include a mix of simple, reasoning-based, and multi-context questions.
 Return only valid JSON — no explanation."""
 
     response = await client.messages.create(
-        model="claude-sonnet-4-6",
-        max_tokens=4096,
+        model=config.ANTHROPIC_MODEL,
+        max_tokens=config.MAX_TOKENS_GENERATION,
         system=GENERATION_SYSTEM,
         messages=[{"role": "user", "content": prompt}],
     )

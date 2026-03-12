@@ -5,6 +5,8 @@ import os
 from typing import Optional, AsyncGenerator
 from functools import partial
 
+import config
+
 
 async def _run_in_executor(fn, *args):
     loop = asyncio.get_event_loop()
@@ -16,7 +18,7 @@ def _build_judge_llm():
     from langchain_anthropic import ChatAnthropic
     return LangchainLLMWrapper(
         ChatAnthropic(
-            model="claude-sonnet-4-6",
+            model=config.ANTHROPIC_MODEL,
             anthropic_api_key=os.environ.get("ANTHROPIC_API_KEY", ""),
         )
     )

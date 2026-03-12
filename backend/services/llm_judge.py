@@ -4,13 +4,19 @@ import json
 import os
 import anthropic
 
+import config
+
 _client: anthropic.AsyncAnthropic | None = None
 
 
 def _get_client() -> anthropic.AsyncAnthropic:
     global _client
     if _client is None:
-        _client = anthropic.AsyncAnthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
+        _client = anthropic.AsyncAnthropic(
+            api_key=os.environ.get("ANTHROPIC_API_KEY"),
+            max_retries=config.LLM_MAX_RETRIES,
+            timeout=config.LLM_TIMEOUT,
+        )
     return _client
 
 
@@ -57,8 +63,8 @@ Analyze whether this answer hallucinate or introduces unsupported information.""
 
     try:
         response = await client.messages.create(
-            model="claude-sonnet-4-6",
-            max_tokens=1024,
+            model=config.ANTHROPIC_MODEL,
+            max_tokens=config.MAX_TOKENS_HALLUCINATION,
             system=HALLUCINATION_SYSTEM,
             messages=[{"role": "user", "content": user_message}],
         )
@@ -103,8 +109,8 @@ Generate a brief plain-English summary."""
 
     try:
         response = await client.messages.create(
-            model="claude-sonnet-4-6",
-            max_tokens=256,
+            model=config.ANTHROPIC_MODEL,
+            max_tokens=config.MAX_TOKENS_EXPLANATION,
             system=EXPLANATION_SYSTEM,
             messages=[{"role": "user", "content": prompt}],
         )
