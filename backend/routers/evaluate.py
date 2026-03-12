@@ -2,7 +2,11 @@
 from __future__ import annotations
 import asyncio
 import json
+import os
+import time
+from collections import OrderedDict
 from typing import AsyncGenerator
+from uuid import uuid4
 
 from fastapi import APIRouter
 from sse_starlette.sse import EventSourceResponse
@@ -20,22 +24,49 @@ from services.ragas_evaluator import stream_ragas_evaluation
 from services.llm_judge import detect_hallucination, generate_explanation
 from services.trace_analyzer import analyze_trace, generate_recommendations
 from utils.formatters import clamp_score, compute_overall_score, score_to_verdict
+from logger import get_logger
 
 router = APIRouter(prefix="/evaluate", tags=["evaluate"])
+_log = get_logger("rag_auditor.evaluate")
 
-# In-memory evaluation history for the session
-_history: dict[str, EvaluationResponse] = {}
+HISTORY_MAX_SIZE = int(os.environ.get("EVALUATION_HISTORY_MAX_SIZE", "200"))
+HISTORY_TTL_SECONDS = int(os.environ.get("EVALUATION_HISTORY_TTL_SECONDS", "3600"))
+
+# Bounded in-memory evaluation history: key → (created_at, EvaluationResponse)
+_history: OrderedDict[str, tuple[float, EvaluationResponse]] = OrderedDict()
 
 
-async def _run_full_evaluation(req: EvaluationRequest) -> tuple[dict, dict, str]:
-    """Run RAGAS metrics and hallucination check in parallel, return (scores, hallucination, explanation)."""
-    ragas_task = asyncio.create_task(
-        _collect_ragas_scores(req)
-    )
+def _prune_history(now: float | None = None) -> None:
+    ts = now if now is not None else time.time()
+    expired = [k for k, (created_at, _) in _history.items() if ts - created_at > HISTORY_TTL_SECONDS]
+    for k in expired:
+        _history.pop(k, None)
+    while len(_history) > HISTORY_MAX_SIZE:
+        _history.popitem(last=False)
+
+
+def _store_history(result: EvaluationResponse) -> None:
+    _prune_history()
+    _history[uuid4().hex] = (time.time(), result)
+
+
+async def _run_full_evaluation(req: EvaluationRequest) -> tuple[dict, dict]:
+    """Run RAGAS metrics and hallucination check in parallel."""
+    t0 = time.perf_counter()
+    ragas_task = asyncio.create_task(_collect_ragas_scores(req))
     hallucination_task = asyncio.create_task(
         detect_hallucination(req.question, req.answer, req.contexts)
     )
     scores_raw, hallucination = await asyncio.gather(ragas_task, hallucination_task)
+    _log.info(
+        "evaluation_finished",
+        extra={
+            "route": "evaluate",
+            "elapsed_ms": round((time.perf_counter() - t0) * 1000, 2),
+            "mode": req.mode,
+            "num_contexts": len(req.contexts),
+        },
+    )
     return scores_raw, hallucination
 
 
@@ -93,7 +124,7 @@ async def evaluate(req: EvaluationRequest) -> EvaluationResponse:
         recs_raw,
     )
     result = _build_response(req, raw_scores, hallucination, explanation)
-    _history[id(result)] = result
+    _store_history(result)
     return result
 
 
@@ -122,7 +153,11 @@ async def evaluate_stream(req: EvaluationRequest):
         yield {"data": json.dumps({"type": "progress", "message": "Running hallucination check..."})}
         try:
             hallucination = await hallucination_task
-        except Exception:
+        except Exception as exc:
+            _log.warning(
+                "hallucination_fallback",
+                extra={"route": "evaluate_stream", "error_class": type(exc).__name__},
+            )
             hallucination = {"risk_level": "medium"}
 
         # Generate explanation
@@ -135,6 +170,7 @@ async def evaluate_stream(req: EvaluationRequest):
         )
 
         result = _build_response(req, scores, hallucination, explanation)
+        _store_history(result)
         yield {"data": json.dumps({"type": "result", "data": result.model_dump()})}
         yield {"data": "[DONE]"}
 
@@ -157,8 +193,10 @@ async def evaluate_batch(req: BatchEvaluationRequest):
                 recs_raw,
             )
             result = _build_response(sample, raw_scores, hallucination, explanation)
+            _store_history(result)
             return idx, result, None
         except Exception as exc:
+            _log.exception("batch_eval_error", extra={"sample_index": idx, "error_class": type(exc).__name__})
             return idx, None, str(exc)
 
     tasks = [eval_one(sample, i) for i, sample in enumerate(req.samples)]
