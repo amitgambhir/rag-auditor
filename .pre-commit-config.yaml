@@ -1,0 +1,30 @@
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-added-large-files
+        args: [--maxkb=500]
+      - id: check-merge-conflict
+      - id: check-yaml
+      - id: check-json
+        exclude: tsconfig.*\.json$   # tsconfig allows comments
+
+  # Block OS / editor artifact files from ever being committed
+  - repo: local
+    hooks:
+      - id: no-os-artifacts
+        name: Block OS artifact files
+        language: fail
+        entry: "OS artifact file — remove it and add to .gitignore"
+        files: >-
+          (?x)(
+            (^|/)\.DS_Store$|
+            (^|/)\._.*|
+            (^|/)\.Spotlight-V100(/|$)|
+            (^|/)\.Trashes(/|$)|
+            (^|/)Thumbs\.db$|
+            (^|/)ehthumbs\.db$|
+            (^|/)desktop\.ini$
+          )
