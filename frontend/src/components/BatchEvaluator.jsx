@@ -1,19 +1,8 @@
 import React, { useState } from 'react'
 import { Upload, Download, Loader2, AlertCircle } from 'lucide-react'
 import { evaluateBatch } from '../api/client'
+import { parseCSV, stringifyCSV } from '../utils/csv'
 import { scoreColor, verdictConfig } from '../utils/scoreHelpers'
-
-function parseCSV(text) {
-  const lines = text.trim().split('\n')
-  if (lines.length < 2) throw new Error('CSV must have header and at least one row')
-  const headers = lines[0].split(',').map((h) => h.trim().replace(/^"|"$/g, ''))
-  return lines.slice(1).map((line) => {
-    const values = line.split(',').map((v) => v.trim().replace(/^"|"$/g, ''))
-    const row = {}
-    headers.forEach((h, i) => (row[h] = values[i] || ''))
-    return row
-  })
-}
 
 function parseSamples(text, format) {
   if (format === 'json') {
@@ -23,11 +12,39 @@ function parseSamples(text, format) {
   return parseCSV(text)
 }
 
+function parseContexts(value) {
+  if (Array.isArray(value)) {
+    return value.map((item) => String(item).trim()).filter(Boolean)
+  }
+
+  if (typeof value !== 'string' || !value.trim()) {
+    return []
+  }
+
+  const trimmed = value.trim()
+  if (trimmed.startsWith('[')) {
+    try {
+      const parsed = JSON.parse(trimmed)
+      if (Array.isArray(parsed)) {
+        return parsed.map((item) => String(item).trim()).filter(Boolean)
+      }
+    } catch {
+      // Fall back to legacy pipe-delimited parsing.
+    }
+  }
+
+  return trimmed
+    .split('|')
+    .map((item) => item.trim())
+    .filter(Boolean)
+}
+
 export function BatchEvaluator() {
   const [loading, setLoading] = useState(false)
   const [results, setResults] = useState(null)
   const [error, setError] = useState(null)
   const [progress, setProgress] = useState(null)
+  const [uploadedSamples, setUploadedSamples] = useState([])
 
   const handleFileUpload = async (e) => {
     const file = e.target.files?.[0]
@@ -43,15 +60,14 @@ export function BatchEvaluator() {
       const samples = rows.map((row) => ({
         question: row.question || row.Question || '',
         answer: row.answer || row.Answer || '',
-        contexts: row.contexts
-          ? (typeof row.contexts === 'string' ? row.contexts.split('|') : row.contexts)
-          : [],
+        contexts: parseContexts(row.contexts),
         ground_truth: row.ground_truth || row['Ground Truth'] || null,
         mode: 'full',
       }))
 
       if (!samples.length) throw new Error('No valid samples found')
 
+      setUploadedSamples(samples)
       setLoading(true)
       setProgress({ done: 0, total: samples.length })
       const data = await evaluateBatch(samples)
@@ -66,21 +82,33 @@ export function BatchEvaluator() {
 
   const exportCSV = () => {
     if (!results?.results) return
-    const headers = ['question', 'verdict', 'overall_score', 'faithfulness', 'answer_relevancy', 'context_precision', 'context_recall', 'hallucination_risk']
+    const fields = ['question', 'verdict', 'overall_score', 'faithfulness', 'answer_relevancy', 'context_precision', 'context_recall', 'hallucination_risk']
     const rows = results.results.map((r, i) => {
-      if (!r) return [i, 'error', '', '', '', '', '', '']
-      return [
-        '',
-        r.verdict,
-        r.overall_score,
-        r.scores?.faithfulness ?? '',
-        r.scores?.answer_relevancy ?? '',
-        r.scores?.context_precision ?? '',
-        r.scores?.context_recall ?? '',
-        r.scores?.hallucination_risk ?? '',
-      ]
+      if (!r) {
+        return {
+          question: uploadedSamples[i]?.question || '',
+          verdict: 'error',
+          overall_score: '',
+          faithfulness: '',
+          answer_relevancy: '',
+          context_precision: '',
+          context_recall: '',
+          hallucination_risk: '',
+        }
+      }
+
+      return {
+        question: uploadedSamples[i]?.question || '',
+        verdict: r.verdict,
+        overall_score: r.overall_score,
+        faithfulness: r.scores?.faithfulness ?? '',
+        answer_relevancy: r.scores?.answer_relevancy ?? '',
+        context_precision: r.scores?.context_precision ?? '',
+        context_recall: r.scores?.context_recall ?? '',
+        hallucination_risk: r.scores?.hallucination_risk ?? '',
+      }
     })
-    const csv = [headers, ...rows].map((r) => r.join(',')).join('\n')
+    const csv = stringifyCSV(rows, fields)
     const blob = new Blob([csv], { type: 'text/csv' })
     const url = URL.createObjectURL(blob)
     const a = document.createElement('a')
@@ -97,7 +125,7 @@ export function BatchEvaluator() {
           <div className="text-center">
             <p className="text-sm font-semibold text-text">Upload CSV or JSON</p>
             <p className="text-xs text-text-dim mt-1">
-              Required columns: question, answer, contexts (pipe-separated), ground_truth (optional)
+              Required columns: question, answer, contexts (JSON array or pipe-separated), ground_truth (optional)
             </p>
           </div>
           <input

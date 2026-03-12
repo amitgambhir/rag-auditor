@@ -6,6 +6,7 @@ export function useEvaluate() {
   const [progress, setProgress] = useState(null)
   const [result, setResult] = useState(null)
   const [error, setError] = useState(null)
+  const [currentRequest, setCurrentRequest] = useState(null)
   const cancelRef = useRef(null)
 
   const evaluate = useCallback(async (payload, useStreaming = true) => {
@@ -13,6 +14,7 @@ export function useEvaluate() {
     setProgress(null)
     setResult(null)
     setError(null)
+    setCurrentRequest(payload)
 
     if (useStreaming) {
       const cancel = evaluateStream(payload, {
@@ -54,7 +56,27 @@ export function useEvaluate() {
     cancel()
     setResult(null)
     setError(null)
+    setCurrentRequest(null)
   }, [cancel])
 
-  return { loading, progress, result, error, evaluate, cancel, reset }
+  const loadResult = useCallback((savedEntry) => {
+    cancelRef.current?.()
+    setLoading(false)
+    setProgress(null)
+    setError(null)
+    setResult(savedEntry)
+    setCurrentRequest(savedEntry.request || null)
+  }, [])
+
+  return {
+    loading,
+    progress,
+    result,
+    error,
+    currentRequest,
+    evaluate,
+    cancel,
+    reset,
+    loadResult,
+  }
 }

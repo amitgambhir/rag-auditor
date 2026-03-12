@@ -1,6 +1,7 @@
 import React, { useState } from 'react'
 import { Plus, Trash2, Sparkles, Download, Loader2, AlertCircle, ChevronDown, ChevronUp } from 'lucide-react'
 import { generateDataset } from '../api/client'
+import { stringifyCSV } from '../utils/csv'
 
 function QAPairCard({ pair, index }) {
   const [expanded, setExpanded] = useState(false)
@@ -90,15 +91,15 @@ export function DatasetGenerator() {
 
   const exportCSV = () => {
     if (!result) return
-    const headers = ['question', 'answer', 'ground_truth', 'contexts', 'evolution_type']
-    const rows = result.pairs.map((p) => [
-      `"${p.question.replace(/"/g, '""')}"`,
-      `"${p.answer.replace(/"/g, '""')}"`,
-      `"${p.ground_truth.replace(/"/g, '""')}"`,
-      `"${(p.contexts || []).join(' | ').replace(/"/g, '""')}"`,
-      p.evolution_type || 'simple',
-    ])
-    const csv = [headers, ...rows].map((r) => r.join(',')).join('\n')
+    const fields = ['question', 'answer', 'ground_truth', 'contexts', 'evolution_type']
+    const rows = result.pairs.map((pair) => ({
+      question: pair.question,
+      answer: pair.answer,
+      ground_truth: pair.ground_truth,
+      contexts: JSON.stringify(pair.contexts || []),
+      evolution_type: pair.evolution_type || 'simple',
+    }))
+    const csv = stringifyCSV(rows, fields)
     const blob = new Blob([csv], { type: 'text/csv' })
     const url = URL.createObjectURL(blob)
     const a = document.createElement('a')

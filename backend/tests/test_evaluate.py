@@ -1,10 +1,14 @@
 """Tests for evaluation endpoints and logic."""
 import sys
 import os
+from unittest.mock import AsyncMock, patch
+
+import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 from utils.formatters import compute_overall_score, score_to_verdict, clamp_score
+from services.ragas_evaluator import stream_ragas_evaluation
 from services.trace_analyzer import generate_recommendations, analyze_trace
 
 
@@ -112,3 +116,45 @@ class TestTraceAnalyzer:
         scores = {}
         trace = analyze_trace(scores, [], "q", "a")
         assert any("No contexts" in issue for issue in trace.retrieval_stage.issues)
+
+
+class TestQuickMode:
+    @pytest.mark.asyncio
+    async def test_quick_mode_skips_context_recall(self):
+        executor = AsyncMock(return_value=0.81)
+
+        with patch("services.ragas_evaluator._run_in_executor", executor):
+            events = [
+                event async for event in stream_ragas_evaluation(
+                    "question",
+                    "answer",
+                    ["context"],
+                    "ground truth",
+                    "quick",
+                )
+            ]
+
+        score_event = next(event for event in events if event["type"] == "scores")
+        assert "context_recall" not in score_event["scores"]
+        metric_names = [call.args[1] for call in executor.await_args_list]
+        assert metric_names == ["faithfulness", "answer_relevancy", "context_precision"]
+
+    @pytest.mark.asyncio
+    async def test_full_mode_includes_context_recall(self):
+        executor = AsyncMock(return_value=0.81)
+
+        with patch("services.ragas_evaluator._run_in_executor", executor):
+            events = [
+                event async for event in stream_ragas_evaluation(
+                    "question",
+                    "answer",
+                    ["context"],
+                    "ground truth",
+                    "full",
+                )
+            ]
+
+        score_event = next(event for event in events if event["type"] == "scores")
+        assert score_event["scores"]["context_recall"] == 0.81
+        metric_names = [call.args[1] for call in executor.await_args_list]
+        assert metric_names == ["faithfulness", "answer_relevancy", "context_precision", "context_recall"]

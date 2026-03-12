@@ -17,6 +17,10 @@ async def _run_in_executor(fn, *args):
     return await loop.run_in_executor(None, partial(fn, *args))
 
 
+def _should_include_context_recall(ground_truth: Optional[str], mode: str) -> bool:
+    return mode == "full" and bool(ground_truth)
+
+
 def _build_judge_llm():
     from ragas.llms import LangchainLLMWrapper
     from langchain_anthropic import ChatAnthropic
@@ -58,7 +62,7 @@ def _run_ragas_sync(
     }
     metrics_to_run = [faithfulness, answer_relevancy, context_precision]
 
-    if ground_truth:
+    if _should_include_context_recall(ground_truth, mode):
         data["ground_truth"] = [ground_truth]
         metrics_to_run.append(context_recall)
 
@@ -115,7 +119,7 @@ async def stream_ragas_evaluation(
         ("answer_relevancy", "Measuring answer relevancy..."),
         ("context_precision", "Evaluating context precision..."),
     ]
-    if ground_truth:
+    if _should_include_context_recall(ground_truth, mode):
         metrics_config.append(("context_recall", "Computing context recall..."))
 
     yield {"type": "progress", "message": "Initializing evaluation engine...", "step": 0, "total": len(metrics_config) + 1}

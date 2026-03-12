@@ -23,13 +23,13 @@ function ProgressIndicator({ progress }) {
   )
 }
 
-export function EvaluatorForm({ onEvaluate, loading, progress, onCancel }) {
-  const [question, setQuestion] = useState('')
-  const [answer, setAnswer] = useState('')
-  const [contexts, setContexts] = useState([''])
-  const [groundTruth, setGroundTruth] = useState('')
-  const [showGroundTruth, setShowGroundTruth] = useState(false)
-  const [mode, setMode] = useState('full')
+export function EvaluatorForm({ initialValues = null, onEvaluate, loading, progress, onCancel }) {
+  const [question, setQuestion] = useState(initialValues?.question || '')
+  const [answer, setAnswer] = useState(initialValues?.answer || '')
+  const [contexts, setContexts] = useState(initialValues?.contexts?.length ? initialValues.contexts : [''])
+  const [groundTruth, setGroundTruth] = useState(initialValues?.ground_truth || '')
+  const [showGroundTruth, setShowGroundTruth] = useState(Boolean(initialValues?.ground_truth))
+  const [mode, setMode] = useState(initialValues?.mode || 'full')
 
   const addContext = () => setContexts((prev) => [...prev, ''])
   const removeContext = (i) =>

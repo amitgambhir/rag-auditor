@@ -34,31 +34,44 @@ function ErrorBanner({ error, onDismiss }) {
 
 export default function App() {
   const [activeTab, setActiveTab] = useState('evaluate')
-  const { loading, progress, result, error, evaluate, cancel, reset } = useEvaluate()
+  const [draftRequest, setDraftRequest] = useState(null)
+  const [formSeed, setFormSeed] = useState(0)
+  const { loading, progress, result, error, currentRequest, evaluate, cancel, reset, loadResult } = useEvaluate()
   const { history, addEntry, clearHistory } = useHistory()
 
   const handleEvaluate = useCallback(
     (payload) => {
+      setDraftRequest(payload)
       evaluate(payload, true)
     },
     [evaluate]
   )
 
   const handleSave = useCallback(() => {
-    if (result) {
+    if (result && currentRequest) {
       addEntry({
         ...result,
-        question: result._question,
+        question: currentRequest.question,
+        request: currentRequest,
       })
     }
-  }, [result, addEntry])
+  }, [result, currentRequest, addEntry])
 
   const handleSelectHistory = useCallback(
     (entry) => {
+      loadResult(entry)
+      setDraftRequest(entry.request || null)
+      setFormSeed(entry.id)
       setActiveTab('evaluate')
     },
-    []
+    [loadResult]
   )
+
+  const handleReset = useCallback(() => {
+    reset()
+    setDraftRequest(null)
+    setFormSeed((seed) => seed + 1)
+  }, [reset])
 
   return (
     <div className="min-h-screen bg-bg">
@@ -111,6 +124,8 @@ export default function App() {
                   Run Evaluation
                 </h2>
                 <EvaluatorForm
+                  key={formSeed}
+                  initialValues={draftRequest}
                   onEvaluate={handleEvaluate}
                   loading={loading}
                   progress={progress}
@@ -147,7 +162,7 @@ export default function App() {
                 <ResultsDashboard
                   result={result}
                   onSave={handleSave}
-                  onReset={reset}
+                  onReset={handleReset}
                 />
               )}
             </div>
