@@ -16,7 +16,7 @@ def _build_judge_llm():
     from langchain_anthropic import ChatAnthropic
     return LangchainLLMWrapper(
         ChatAnthropic(
-            model="claude-opus-4-6",
+            model="claude-sonnet-4-6",
             anthropic_api_key=os.environ.get("ANTHROPIC_API_KEY", ""),
         )
     )

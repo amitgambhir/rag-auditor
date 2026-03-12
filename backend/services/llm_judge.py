@@ -57,7 +57,7 @@ Analyze whether this answer hallucinate or introduces unsupported information.""
 
     try:
         response = await client.messages.create(
-            model="claude-opus-4-6",
+            model="claude-sonnet-4-6",
             max_tokens=1024,
             system=HALLUCINATION_SYSTEM,
             messages=[{"role": "user", "content": user_message}],
@@ -103,7 +103,7 @@ Generate a brief plain-English summary."""
 
     try:
         response = await client.messages.create(
-            model="claude-opus-4-6",
+            model="claude-sonnet-4-6",
             max_tokens=256,
             system=EXPLANATION_SYSTEM,
             messages=[{"role": "user", "content": prompt}],

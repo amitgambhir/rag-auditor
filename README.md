@@ -133,7 +133,7 @@ RAG Auditor is a product layer built on top of battle-tested open source infrast
 
 - **[RAGAS](https://docs.ragas.io)** — the leading RAG evaluation framework, providing
   the core faithfulness, relevancy, precision, and recall metrics
-- **[Claude](https://anthropic.com)** (`claude-opus-4.6`) — LLM-as-judge for
+- **[Claude](https://anthropic.com)** (`claude-sonnet-4-6`) — LLM-as-judge for
   hallucination detection and plain-English explanations
 - **[FastAPI](https://fastapi.tiangolo.com)** — async Python backend with SSE streaming
 - **[React](https://react.dev) + [Recharts](https://recharts.org)** — dashboard UI
@@ -578,7 +578,7 @@ Every evaluation returns prioritized recommendations sorted by severity:
 
 ## How LLM-as-Judge Works
 
-RAG Auditor uses Claude (`claude-opus-4.6`) for three purposes:
+RAG Auditor uses Claude (`claude-sonnet-4-6`) for three purposes:
 
 1. **RAGAS metrics** — Claude is the judge LLM for all RAGAS computations (faithfulness, answer relevancy, context precision, context recall)
 2. **Hallucination detection** — A custom Claude prompt analyzes whether the answer introduces unsupported claims, returning `risk_level`, `confidence`, `unsupported_claims`, and `rationale`
@@ -807,7 +807,7 @@ All Claude calls are isolated in `backend/services/llm_judge.py`. To use a diffe
 ```python
 # llm_judge.py
 response = await client.messages.create(
-    model="claude-opus-4-6",   # change this
+    model="claude-sonnet-4-6",   # change this
     ...
 )
 ```

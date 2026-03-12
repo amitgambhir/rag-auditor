@@ -35,7 +35,7 @@ def _generate_with_ragas(documents: list[str], num_questions: int) -> list[dict]
 
     judge_llm = LangchainLLMWrapper(
         ChatAnthropic(
-            model="claude-opus-4-6",
+            model="claude-sonnet-4-6",
             anthropic_api_key=os.environ.get("ANTHROPIC_API_KEY", ""),
         )
     )
@@ -102,7 +102,7 @@ Include a mix of simple, reasoning-based, and multi-context questions.
 Return only valid JSON — no explanation."""
 
     response = await client.messages.create(
-        model="claude-opus-4-6",
+        model="claude-sonnet-4-6",
         max_tokens=4096,
         system=GENERATION_SYSTEM,
         messages=[{"role": "user", "content": prompt}],
