@@ -10,10 +10,24 @@ import anthropic
 _client: Optional[anthropic.AsyncAnthropic] = None
 
 
+def _env_int(name: str, default: int) -> int:
+    val = os.environ.get(name)
+    if not val:
+        return default
+    try:
+        return int(val)
+    except ValueError:
+        return default
+
+
 def _get_client() -> anthropic.AsyncAnthropic:
     global _client
     if _client is None:
-        _client = anthropic.AsyncAnthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
+        _client = anthropic.AsyncAnthropic(
+            api_key=os.environ.get("ANTHROPIC_API_KEY"),
+            timeout=_env_int("DATASET_GEN_TIMEOUT_SECONDS", 90),
+            max_retries=_env_int("DATASET_GEN_MAX_RETRIES", 2),
+        )
     return _client
 
 
@@ -33,10 +47,16 @@ def _generate_with_ragas(documents: list[str], num_questions: int) -> list[dict]
     from ragas.embeddings import LangchainEmbeddingsWrapper
     from langchain_community.embeddings import FakeEmbeddings
 
+    model_name = os.environ.get("DATASET_GEN_MODEL", "claude-opus-4-6")
+    timeout_s = _env_int("DATASET_GEN_TIMEOUT_SECONDS", 90)
+    max_retries = _env_int("DATASET_GEN_MAX_RETRIES", 2)
+
     judge_llm = LangchainLLMWrapper(
         ChatAnthropic(
-            model="claude-opus-4-6",
+            model=model_name,
             anthropic_api_key=os.environ.get("ANTHROPIC_API_KEY", ""),
+            timeout=timeout_s,
+            max_retries=max_retries,
         )
     )
     embeddings = LangchainEmbeddingsWrapper(FakeEmbeddings(size=768))
@@ -90,6 +110,7 @@ Return a JSON array. Each element:
 async def generate_with_claude(documents: list[str], num_questions: int) -> list[dict]:
     """Generate Q&A pairs using Claude directly when RAGAS is unavailable."""
     client = _get_client()
+    model_name = os.environ.get("DATASET_GEN_MODEL", "claude-opus-4-6")
     doc_text = "\n\n===\n\n".join(
         f"Document {i+1}:\n{doc[:3000]}" for i, doc in enumerate(documents[:5])
     )
@@ -102,7 +123,7 @@ Include a mix of simple, reasoning-based, and multi-context questions.
 Return only valid JSON — no explanation."""
 
     response = await client.messages.create(
-        model="claude-opus-4-6",
+        model=model_name,
         max_tokens=4096,
         system=GENERATION_SYSTEM,
         messages=[{"role": "user", "content": prompt}],

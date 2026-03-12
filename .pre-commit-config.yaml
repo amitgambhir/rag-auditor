@@ -1,0 +1,16 @@
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: detect-private-key
+
+  - repo: local
+    hooks:
+      - id: forbid-os-artifacts
+        name: Forbid OS artifact files
+        entry: bash -c '! git diff --cached --name-only | rg -E "(^|/)\\.DS_Store$|(^|/)Thumbs\\.db$|(^|/)Desktop\\.ini$"'
+        language: system
+        pass_filenames: false

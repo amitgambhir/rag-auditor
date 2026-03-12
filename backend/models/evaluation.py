@@ -17,7 +17,7 @@ class BatchEvaluationRequest(BaseModel):
 
 class TraceStage(BaseModel):
     score: float
-    issues: list[str] = []
+    issues: list[str] = Field(default_factory=list)
 
 
 class Trace(BaseModel):

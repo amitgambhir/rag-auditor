@@ -2,40 +2,75 @@
 from __future__ import annotations
 import asyncio
 import json
+import logging
+import os
+import time
+from collections import OrderedDict
 from typing import AsyncGenerator
+from uuid import uuid4
 
 from fastapi import APIRouter
 from sse_starlette.sse import EventSourceResponse
 
 from models.evaluation import (
-    EvaluationRequest,
-    EvaluationResponse,
     BatchEvaluationRequest,
     CompareRequest,
     CompareResponse,
+    EvaluationRequest,
+    EvaluationResponse,
     ScoreDelta,
     Scores,
 )
-from services.ragas_evaluator import stream_ragas_evaluation
 from services.llm_judge import detect_hallucination, generate_explanation
+from services.ragas_evaluator import stream_ragas_evaluation
 from services.trace_analyzer import analyze_trace, generate_recommendations
 from utils.formatters import clamp_score, compute_overall_score, score_to_verdict
 
 router = APIRouter(prefix="/evaluate", tags=["evaluate"])
+logger = logging.getLogger(__name__)
 
-# In-memory evaluation history for the session
-_history: dict[str, EvaluationResponse] = {}
+HISTORY_MAX_SIZE = int(os.environ.get("EVALUATION_HISTORY_MAX_SIZE", "200"))
+HISTORY_TTL_SECONDS = int(os.environ.get("EVALUATION_HISTORY_TTL_SECONDS", "3600"))
+
+# In-memory evaluation history for the session, bounded by max size + TTL.
+_history: OrderedDict[str, tuple[float, EvaluationResponse]] = OrderedDict()
 
 
-async def _run_full_evaluation(req: EvaluationRequest) -> tuple[dict, dict, str]:
-    """Run RAGAS metrics and hallucination check in parallel, return (scores, hallucination, explanation)."""
-    ragas_task = asyncio.create_task(
-        _collect_ragas_scores(req)
-    )
+def _prune_history(now: float | None = None) -> None:
+    ts = now if now is not None else time.time()
+
+    expired_keys = [
+        key for key, (created_at, _) in _history.items()
+        if ts - created_at > HISTORY_TTL_SECONDS
+    ]
+    for key in expired_keys:
+        _history.pop(key, None)
+
+    while len(_history) > HISTORY_MAX_SIZE:
+        _history.popitem(last=False)
+
+
+def _store_history(result: EvaluationResponse) -> None:
+    _prune_history()
+    _history[uuid4().hex] = (time.time(), result)
+    _prune_history()
+
+
+async def _run_full_evaluation(req: EvaluationRequest) -> tuple[dict, dict]:
+    """Run RAGAS metrics and hallucination check in parallel."""
+    start = time.perf_counter()
+    ragas_task = asyncio.create_task(_collect_ragas_scores(req))
     hallucination_task = asyncio.create_task(
         detect_hallucination(req.question, req.answer, req.contexts)
     )
     scores_raw, hallucination = await asyncio.gather(ragas_task, hallucination_task)
+    elapsed_ms = int((time.perf_counter() - start) * 1000)
+    logger.info(
+        "event=evaluation_finished route=evaluate elapsed_ms=%s mode=%s contexts=%s",
+        elapsed_ms,
+        req.mode,
+        len(req.contexts),
+    )
     return scores_raw, hallucination
 
 
@@ -93,7 +128,7 @@ async def evaluate(req: EvaluationRequest) -> EvaluationResponse:
         recs_raw,
     )
     result = _build_response(req, raw_scores, hallucination, explanation)
-    _history[id(result)] = result
+    _store_history(result)
     return result
 
 
@@ -119,14 +154,26 @@ async def evaluate_stream(req: EvaluationRequest):
             yield {"data": json.dumps(event)}
 
         # Get hallucination result
-        yield {"data": json.dumps({"type": "progress", "message": "Running hallucination check..."})}
+        yield {
+            "data": json.dumps(
+                {"type": "progress", "message": "Running hallucination check..."}
+            )
+        }
         try:
             hallucination = await hallucination_task
-        except Exception:
+        except Exception as exc:
+            logger.warning(
+                "event=hallucination_fallback route=evaluate_stream fallback=default_medium error=%s",
+                exc,
+            )
             hallucination = {"risk_level": "medium"}
 
         # Generate explanation
-        yield {"data": json.dumps({"type": "progress", "message": "Generating explanation..."})}
+        yield {
+            "data": json.dumps(
+                {"type": "progress", "message": "Generating explanation..."}
+            )
+        }
         scores_clean = {k: clamp_score(v) for k, v in scores.items()}
         recs_raw = generate_recommendations(scores_clean)
         explanation = await generate_explanation(
@@ -135,6 +182,7 @@ async def evaluate_stream(req: EvaluationRequest):
         )
 
         result = _build_response(req, scores, hallucination, explanation)
+        _store_history(result)
         yield {"data": json.dumps({"type": "result", "data": result.model_dump()})}
         yield {"data": "[DONE]"}
 
@@ -157,8 +205,10 @@ async def evaluate_batch(req: BatchEvaluationRequest):
                 recs_raw,
             )
             result = _build_response(sample, raw_scores, hallucination, explanation)
+            _store_history(result)
             return idx, result, None
         except Exception as exc:
+            logger.exception("event=batch_eval_error sample_index=%s", idx)
             return idx, None, str(exc)
 
     tasks = [eval_one(sample, i) for i, sample in enumerate(req.samples)]
@@ -177,7 +227,13 @@ async def evaluate_batch(req: BatchEvaluationRequest):
 
     # Aggregate scores
     agg: dict = {}
-    metric_keys = ["faithfulness", "answer_relevancy", "context_precision", "context_recall", "overall_score"]
+    metric_keys = [
+        "faithfulness",
+        "answer_relevancy",
+        "context_precision",
+        "context_recall",
+        "overall_score",
+    ]
     for key in metric_keys:
         vals = []
         for r in results:
@@ -230,23 +286,31 @@ async def compare(req: CompareRequest) -> CompareResponse:
             else:
                 direction = "regressed"
 
-        deltas.append(ScoreDelta(
-            metric=key,
-            baseline=b_val,
-            candidate=c_val,
-            delta=delta,
-            direction=direction,
-        ))
+        deltas.append(
+            ScoreDelta(
+                metric=key,
+                baseline=b_val,
+                candidate=c_val,
+                delta=delta,
+                direction=direction,
+            )
+        )
 
     # Overall delta
     overall_delta = round(candidate.overall_score - baseline.overall_score, 4)
-    deltas.append(ScoreDelta(
-        metric="overall_score",
-        baseline=baseline.overall_score,
-        candidate=candidate.overall_score,
-        delta=overall_delta,
-        direction="improved" if overall_delta > 0.01 else "regressed" if overall_delta < -0.01 else "unchanged",
-    ))
+    deltas.append(
+        ScoreDelta(
+            metric="overall_score",
+            baseline=baseline.overall_score,
+            candidate=candidate.overall_score,
+            delta=overall_delta,
+            direction=(
+                "improved"
+                if overall_delta > 0.01
+                else "regressed" if overall_delta < -0.01 else "unchanged"
+            ),
+        )
+    )
 
     improved = [d for d in deltas if d.direction == "improved"]
     regressed = [d for d in deltas if d.direction == "regressed"]
@@ -269,8 +333,8 @@ async def compare(req: CompareRequest) -> CompareResponse:
         best = max(improved, key=lambda d: d.delta or 0)
         worst = min(regressed, key=lambda d: d.delta or 0)
         summary = (
-            f"Mixed results: {best.metric} improved by {(best.delta or 0)*100:.1f}% "
-            f"but {worst.metric} regressed by {abs(worst.delta or 0)*100:.1f}%. "
+            f"Mixed results: {best.metric} improved by {(best.delta or 0) * 100:.1f}% "
+            f"but {worst.metric} regressed by {abs(worst.delta or 0) * 100:.1f}%. "
         )
     else:
         summary = "No significant change in RAG quality. "

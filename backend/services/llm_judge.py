@@ -7,10 +7,24 @@ import anthropic
 _client: anthropic.AsyncAnthropic | None = None
 
 
+def _env_int(name: str, default: int) -> int:
+    val = os.environ.get(name)
+    if not val:
+        return default
+    try:
+        return int(val)
+    except ValueError:
+        return default
+
+
 def _get_client() -> anthropic.AsyncAnthropic:
     global _client
     if _client is None:
-        _client = anthropic.AsyncAnthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
+        _client = anthropic.AsyncAnthropic(
+            api_key=os.environ.get("ANTHROPIC_API_KEY"),
+            timeout=_env_int("LLM_JUDGE_TIMEOUT_SECONDS", 60),
+            max_retries=_env_int("LLM_JUDGE_MAX_RETRIES", 2),
+        )
     return _client
 
 
@@ -43,6 +57,7 @@ async def detect_hallucination(
 ) -> dict:
     """Use Claude to detect hallucination risk in a RAG answer."""
     client = _get_client()
+    model_name = os.environ.get("LLM_JUDGE_MODEL", "claude-opus-4-6")
     context_text = "\n\n---\n\n".join(
         f"[Context {i+1}]:\n{ctx}" for i, ctx in enumerate(contexts)
     )
@@ -57,7 +72,7 @@ Analyze whether this answer hallucinate or introduces unsupported information.""
 
     try:
         response = await client.messages.create(
-            model="claude-opus-4-6",
+            model=model_name,
             max_tokens=1024,
             system=HALLUCINATION_SYSTEM,
             messages=[{"role": "user", "content": user_message}],
@@ -93,6 +108,7 @@ Be direct, specific, and actionable. Do not mention score numbers — describe q
 async def generate_explanation(scores: dict, recommendations: list[dict]) -> str:
     """Generate a plain-English explanation of evaluation results."""
     client = _get_client()
+    model_name = os.environ.get("LLM_EXPLANATION_MODEL", os.environ.get("LLM_JUDGE_MODEL", "claude-opus-4-6"))
     rec_summary = "; ".join(
         f"{r['dimension']} ({r['severity']}): {r['issue']}"
         for r in recommendations[:3]
@@ -103,7 +119,7 @@ Generate a brief plain-English summary."""
 
     try:
         response = await client.messages.create(
-            model="claude-opus-4-6",
+            model=model_name,
             max_tokens=256,
             system=EXPLANATION_SYSTEM,
             messages=[{"role": "user", "content": prompt}],

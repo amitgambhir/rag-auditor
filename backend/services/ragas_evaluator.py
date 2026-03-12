@@ -2,8 +2,18 @@
 from __future__ import annotations
 import asyncio
 import os
-from typing import Optional, AsyncGenerator
 from functools import partial
+from typing import AsyncGenerator, Optional
+
+
+def _env_int(name: str, default: int) -> int:
+    val = os.environ.get(name)
+    if not val:
+        return default
+    try:
+        return int(val)
+    except ValueError:
+        return default
 
 
 async def _run_in_executor(fn, *args):
@@ -14,10 +24,17 @@ async def _run_in_executor(fn, *args):
 def _build_judge_llm():
     from ragas.llms import LangchainLLMWrapper
     from langchain_anthropic import ChatAnthropic
+
+    model_name = os.environ.get("RAGAS_JUDGE_MODEL", "claude-opus-4-6")
+    timeout_s = _env_int("RAGAS_JUDGE_TIMEOUT_SECONDS", 60)
+    max_retries = _env_int("RAGAS_JUDGE_MAX_RETRIES", 2)
+
     return LangchainLLMWrapper(
         ChatAnthropic(
-            model="claude-opus-4-6",
+            model=model_name,
             anthropic_api_key=os.environ.get("ANTHROPIC_API_KEY", ""),
+            timeout=timeout_s,
+            max_retries=max_retries,
         )
     )
 
@@ -33,10 +50,10 @@ def _run_ragas_sync(
     from datasets import Dataset
     from ragas import evaluate
     from ragas.metrics import (
-        faithfulness,
         answer_relevancy,
         context_precision,
         context_recall,
+        faithfulness,
     )
 
     judge_llm = _build_judge_llm()
@@ -112,12 +129,22 @@ async def stream_ragas_evaluation(
     if ground_truth:
         metrics_config.append(("context_recall", "Computing context recall..."))
 
-    yield {"type": "progress", "message": "Initializing evaluation engine...", "step": 0, "total": len(metrics_config) + 1}
+    yield {
+        "type": "progress",
+        "message": "Initializing evaluation engine...",
+        "step": 0,
+        "total": len(metrics_config) + 1,
+    }
 
     scores: dict = {}
 
     for idx, (metric_name, message) in enumerate(metrics_config):
-        yield {"type": "progress", "message": message, "step": idx + 1, "total": len(metrics_config) + 1}
+        yield {
+            "type": "progress",
+            "message": message,
+            "step": idx + 1,
+            "total": len(metrics_config) + 1,
+        }
         try:
             result = await _run_in_executor(
                 _run_single_metric, metric_name, question, answer, contexts, ground_truth
@@ -126,7 +153,12 @@ async def stream_ragas_evaluation(
         except Exception:
             scores[metric_name] = None
 
-    yield {"type": "progress", "message": "Finalizing scores...", "step": len(metrics_config) + 1, "total": len(metrics_config) + 1}
+    yield {
+        "type": "progress",
+        "message": "Finalizing scores...",
+        "step": len(metrics_config) + 1,
+        "total": len(metrics_config) + 1,
+    }
     yield {"type": "scores", "scores": scores}
 
 
@@ -141,10 +173,10 @@ def _run_single_metric(
     from datasets import Dataset
     from ragas import evaluate
     from ragas.metrics import (
-        faithfulness,
         answer_relevancy,
         context_precision,
         context_recall,
+        faithfulness,
     )
 
     metric_map = {
