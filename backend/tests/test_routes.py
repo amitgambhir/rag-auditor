@@ -125,6 +125,7 @@ class TestEvaluateRoute:
 class TestEvaluateStreamRoute:
     def test_stream_returns_sse_content_type(self):
         with (
+            patch("routers.evaluate.ensure_provider_ready", new=AsyncMock(return_value=None)),
             patch("routers.evaluate.stream_ragas_evaluation", _mock_ragas_stream),
             patch("routers.evaluate.detect_hallucination", new=AsyncMock(return_value=MOCK_HALLUCINATION)),
             patch("routers.evaluate.generate_explanation", new=AsyncMock(return_value=MOCK_EXPLANATION)),
@@ -135,6 +136,7 @@ class TestEvaluateStreamRoute:
 
     def test_stream_contains_data_lines(self):
         with (
+            patch("routers.evaluate.ensure_provider_ready", new=AsyncMock(return_value=None)),
             patch("routers.evaluate.stream_ragas_evaluation", _mock_ragas_stream),
             patch("routers.evaluate.detect_hallucination", new=AsyncMock(return_value=MOCK_HALLUCINATION)),
             patch("routers.evaluate.generate_explanation", new=AsyncMock(return_value=MOCK_EXPLANATION)),
@@ -144,6 +146,7 @@ class TestEvaluateStreamRoute:
 
     def test_stream_final_result_event(self):
         with (
+            patch("routers.evaluate.ensure_provider_ready", new=AsyncMock(return_value=None)),
             patch("routers.evaluate.stream_ragas_evaluation", _mock_ragas_stream),
             patch("routers.evaluate.detect_hallucination", new=AsyncMock(return_value=MOCK_HALLUCINATION)),
             patch("routers.evaluate.generate_explanation", new=AsyncMock(return_value=MOCK_EXPLANATION)),
@@ -164,12 +167,28 @@ class TestEvaluateStreamRoute:
 
     def test_stream_ends_with_done(self):
         with (
+            patch("routers.evaluate.ensure_provider_ready", new=AsyncMock(return_value=None)),
             patch("routers.evaluate.stream_ragas_evaluation", _mock_ragas_stream),
             patch("routers.evaluate.detect_hallucination", new=AsyncMock(return_value=MOCK_HALLUCINATION)),
             patch("routers.evaluate.generate_explanation", new=AsyncMock(return_value=MOCK_EXPLANATION)),
         ):
             raw = client.post("/evaluate/stream", json=SAMPLE_REQUEST).text
         assert "[DONE]" in raw
+
+    def test_stream_preflight_failure_returns_error_event(self):
+        with patch(
+            "routers.evaluate.ensure_provider_ready",
+            new=AsyncMock(side_effect=RuntimeError("Provider unavailable")),
+        ):
+            raw = client.post("/evaluate/stream", json=SAMPLE_REQUEST).text
+
+        data_lines = [
+            line[len("data: "):].strip()
+            for line in raw.splitlines()
+            if line.startswith("data: ") and line[len("data: "):].strip() not in ("[DONE]", "")
+        ]
+        events = [json.loads(line) for line in data_lines]
+        assert any(e.get("type") == "error" for e in events)
 
 
 # ---------------------------------------------------------------------------

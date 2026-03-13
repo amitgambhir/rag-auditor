@@ -8,6 +8,7 @@ from functools import partial
 
 import config
 from logger import get_logger
+from services.llm_judge import is_non_recoverable_provider_error
 
 _log = get_logger("rag_auditor.ragas")
 
@@ -154,6 +155,14 @@ async def stream_ragas_evaluation(
                     "latency_ms": latency_ms,
                 },
             )
+
+            if is_non_recoverable_provider_error(exc):
+                yield {
+                    "type": "error",
+                    "message": "Evaluation failed: Anthropic API request was rejected (billing/auth/config issue). Please verify your API key and account credits.",
+                }
+                return
+
             scores[metric_name] = None
 
     yield {"type": "progress", "message": "Finalizing scores...", "step": len(metrics_config) + 1, "total": len(metrics_config) + 1}

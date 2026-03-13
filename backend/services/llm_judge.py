@@ -10,6 +10,28 @@ from logger import get_logger
 
 _log = get_logger("rag_auditor.llm_judge")
 _client: anthropic.AsyncAnthropic | None = None
+_provider_ready_until: float = 0.0
+_provider_not_ready_until: float = 0.0
+_provider_not_ready_reason: str = ""
+
+
+def is_non_recoverable_provider_error(exc: Exception) -> bool:
+    """Return True when provider errors are configuration/billing/auth related.
+
+    These should fail fast instead of retrying additional evaluation steps.
+    """
+    text = str(exc).lower()
+    signals = (
+        "credit balance is too low",
+        "insufficient credit",
+        "billing",
+        "invalid x-api-key",
+        "api key",
+        "authentication",
+        "permission",
+        "not authorized",
+    )
+    return any(signal in text for signal in signals)
 
 
 def _get_client() -> anthropic.AsyncAnthropic:
@@ -21,6 +43,38 @@ def _get_client() -> anthropic.AsyncAnthropic:
             timeout=config.LLM_TIMEOUT,
         )
     return _client
+
+
+async def ensure_provider_ready() -> None:
+    """Fast-fail on known Anthropic account/key issues with short TTL caching."""
+    global _provider_ready_until
+    global _provider_not_ready_until
+    global _provider_not_ready_reason
+
+    now = time.time()
+    if now < _provider_ready_until:
+        return
+    if now < _provider_not_ready_until:
+        raise RuntimeError(_provider_not_ready_reason)
+
+    client = _get_client()
+    try:
+        await client.messages.create(
+            model=config.ANTHROPIC_MODEL,
+            max_tokens=1,
+            messages=[{"role": "user", "content": "ping"}],
+        )
+        _provider_ready_until = now + 60
+    except Exception as exc:
+        if is_non_recoverable_provider_error(exc):
+            _provider_not_ready_reason = (
+                "Evaluation failed: Anthropic API request was rejected "
+                "(billing/auth/config issue). Please verify your API key and account credits."
+            )
+            _provider_not_ready_until = now + 30
+            raise RuntimeError(_provider_not_ready_reason) from exc
+
+        # Transient provider/network errors are handled by existing request-level paths.
 
 
 HALLUCINATION_SYSTEM = """You are an expert RAG quality evaluator specializing in hallucination detection.

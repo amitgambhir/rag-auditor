@@ -9,6 +9,7 @@ from typing import AsyncGenerator
 from uuid import uuid4
 
 from fastapi import APIRouter
+from fastapi import HTTPException
 from sse_starlette.sse import EventSourceResponse
 
 from models.evaluation import (
@@ -21,7 +22,7 @@ from models.evaluation import (
     Scores,
 )
 from services.ragas_evaluator import stream_ragas_evaluation
-from services.llm_judge import detect_hallucination, generate_explanation
+from services.llm_judge import detect_hallucination, generate_explanation, ensure_provider_ready
 from services.trace_analyzer import analyze_trace, generate_recommendations
 from utils.formatters import clamp_score, compute_overall_score, score_to_verdict
 from logger import get_logger
@@ -53,6 +54,7 @@ def _store_history(result: EvaluationResponse) -> None:
 async def _run_full_evaluation(req: EvaluationRequest) -> tuple[dict, dict]:
     """Run RAGAS metrics and hallucination check in parallel."""
     t0 = time.perf_counter()
+    await ensure_provider_ready()
     ragas_task = asyncio.create_task(_collect_ragas_scores(req))
     hallucination_task = asyncio.create_task(
         detect_hallucination(req.question, req.answer, req.contexts)
@@ -72,11 +74,19 @@ async def _run_full_evaluation(req: EvaluationRequest) -> tuple[dict, dict]:
 
 async def _collect_ragas_scores(req: EvaluationRequest) -> dict:
     scores: dict = {}
+    stream_error: str | None = None
     async for event in stream_ragas_evaluation(
         req.question, req.answer, req.contexts, req.ground_truth, req.mode
     ):
+        if event.get("type") == "error":
+            stream_error = event.get("message") or "Evaluation failed while computing metrics"
+            break
         if event.get("type") == "scores":
             scores = event.get("scores", {})
+
+    if stream_error:
+        raise RuntimeError(stream_error)
+
     return scores
 
 
@@ -116,7 +126,11 @@ def _build_response(
 @router.post("", response_model=EvaluationResponse)
 async def evaluate(req: EvaluationRequest) -> EvaluationResponse:
     """Run a full RAG evaluation. Returns when all metrics are complete."""
-    raw_scores, hallucination = await _run_full_evaluation(req)
+    try:
+        raw_scores, hallucination = await _run_full_evaluation(req)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
     scores_clean = {k: clamp_score(v) for k, v in raw_scores.items()}
     recs_raw = generate_recommendations(scores_clean)
     explanation = await generate_explanation(
@@ -136,6 +150,13 @@ async def evaluate_stream(req: EvaluationRequest):
         scores: dict = {}
         hallucination: dict = {}
 
+        try:
+            await ensure_provider_ready()
+        except RuntimeError as exc:
+            yield {"data": json.dumps({"type": "error", "message": str(exc)})}
+            yield {"data": "[DONE]"}
+            return
+
         # Start hallucination check in parallel with RAGAS
         hallucination_task = asyncio.create_task(
             detect_hallucination(req.question, req.answer, req.contexts)
@@ -145,6 +166,11 @@ async def evaluate_stream(req: EvaluationRequest):
         async for event in stream_ragas_evaluation(
             req.question, req.answer, req.contexts, req.ground_truth, req.mode
         ):
+            if event.get("type") == "error":
+                yield {"data": json.dumps(event)}
+                hallucination_task.cancel()
+                yield {"data": "[DONE]"}
+                return
             if event.get("type") == "scores":
                 scores = event.get("scores", {})
             yield {"data": json.dumps(event)}

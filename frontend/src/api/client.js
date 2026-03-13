@@ -46,6 +46,12 @@ export async function generateDataset(documents, numQuestions) {
 export function evaluateStream(payload, { onProgress, onResult, onError }) {
   const controller = new AbortController()
   const url = `${API_BASE}/evaluate/stream`
+  const streamTimeoutMs = 120000
+  let timedOut = false
+  const timerId = setTimeout(() => {
+    timedOut = true
+    controller.abort()
+  }, streamTimeoutMs)
 
   fetch(url, {
     method: 'POST',
@@ -77,6 +83,10 @@ export function evaluateStream(payload, { onProgress, onResult, onError }) {
               const parsed = JSON.parse(data)
               if (parsed.type === 'result') {
                 onResult?.(parsed.data)
+              } else if (parsed.type === 'error') {
+                onError?.(new Error(parsed.message || 'Evaluation failed'))
+                controller.abort()
+                return
               } else {
                 onProgress?.(parsed)
               }
@@ -88,10 +98,20 @@ export function evaluateStream(payload, { onProgress, onResult, onError }) {
       }
     })
     .catch((err) => {
+      if (timedOut) {
+        onError?.(new Error('Evaluation timed out. Please retry, reduce input size, or check backend provider status.'))
+        return
+      }
       if (err.name !== 'AbortError') {
         onError?.(err)
       }
     })
+    .finally(() => {
+      clearTimeout(timerId)
+    })
 
-  return () => controller.abort()
+  return () => {
+    clearTimeout(timerId)
+    controller.abort()
+  }
 }
