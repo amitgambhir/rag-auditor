@@ -14,16 +14,31 @@
 
 ---
 
+## RAG Ecosystem
+
+This repo is part of a broader RAG toolkit:
+
+| Repo | What it covers |
+| --- | --- |
+| [rag-auditor](https://github.com/amitgambhir/rag-auditor) ← you are here | Evaluate your RAG pipeline |
+| [multi-llm-rag-agent-chat](https://github.com/amitgambhir/multi-llm-rag-agent-chat) | Build a production RAG chatbot with multi-LLM routing |
+| [rag-system-design-guide](https://github.com/amitgambhir/rag-system-design-guide) | Design reference — architecture patterns and trade-offs |
+
+Start with the design guide, build with the chatbot, evaluate with this.
+
+---
+
 ## Table of Contents
 
-1. [The Problem](#the-problem)
-2. [What It Does](#what-it-does)
-3. [Demo](#demo)
-4. [Key Features](#key-features)
-5. [Built On](#built-on)
-6. [Quickstart](#quickstart)
-7. [Architecture](#architecture)
-8. [Step-by-Step Testing Guide](#step-by-step-testing-guide)
+1. [RAG Ecosystem](#rag-ecosystem)
+2. [The Problem](#the-problem)
+3. [What It Does](#what-it-does)
+4. [Demo](#demo)
+5. [Key Features](#key-features)
+6. [Built On](#built-on)
+7. [Quickstart](#quickstart)
+8. [Architecture](#architecture)
+9. [Step-by-Step Testing Guide](#step-by-step-testing-guide)
    - [Step 1 — Set Up Your Environment](#step-1--set-up-your-environment)
    - [Step 2 — Start the Backend](#step-2--start-the-backend)
    - [Step 3 — Generate a Synthetic Golden Dataset](#step-3--generate-a-synthetic-golden-dataset)
@@ -31,17 +46,17 @@
    - [Step 5 — Evaluate a Batch](#step-5--evaluate-a-batch)
    - [Step 6 — Compare Two Evaluations](#step-6--compare-two-evaluations)
    - [Step 7 — Run the Automated Test Suite](#step-7--run-the-automated-test-suite)
-9. [Understanding Verdicts](#understanding-verdicts)
-10. [RAGAS Metrics Explained](#ragas-metrics-explained)
-11. [Interpreting Recommendations](#interpreting-recommendations)
-12. [How LLM-as-Judge Works](#how-llm-as-judge-works)
-13. [Integration: Evaluating multi-llm-rag-agent-chat](#integration-evaluating-multi-llm-rag-agent-chat)
-14. [Key Design Decisions](#key-design-decisions)
-15. [Extending the System](#extending-the-system)
-16. [API Reference](#api-reference)
-17. [Key Files](#key-files)
-18. [Configuration](#configuration)
-19. [Contributing](#contributing)
+10. [Understanding Verdicts](#understanding-verdicts)
+11. [RAGAS Metrics Explained](#ragas-metrics-explained)
+12. [Interpreting Recommendations](#interpreting-recommendations)
+13. [How LLM-as-Judge Works](#how-llm-as-judge-works)
+14. [Integration: Evaluating multi-llm-rag-agent-chat](#integration-evaluating-multi-llm-rag-agent-chat)
+15. [Key Design Decisions](#key-design-decisions)
+16. [Extending the System](#extending-the-system)
+17. [API Reference](#api-reference)
+18. [Key Files](#key-files)
+19. [Configuration](#configuration)
+20. [Contributing](#contributing)
 
 ---
 
